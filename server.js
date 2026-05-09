@@ -25,6 +25,7 @@ const benefits = [
 const calculateScore = (product, user) => {
   if (product.id === "p1" && user.age > 34) return 0;
   if (product.targetJob && !product.targetJob.includes(user.job)) return 0;
+
   let score = 0;
 
   if (product.period === user.period) score += 50;
@@ -72,7 +73,7 @@ const generateReason = (product, user) => {
 
 app.post("/recommend", (req, res) => {
   const user = req.body;
-  const annualIncome = user.monthlyIncome * 12;
+  const annualIncome = user.monthlyIncome * 12 * 10000;
 
   const scores = products
     .map(p => ({ productId: p.id, score: calculateScore(p, user) }))
