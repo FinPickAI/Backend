@@ -23,11 +23,12 @@ const benefits = [
 ];
 
 const calculateScore = (product, user) => {
+  if (product.id === "p1" && user.age > 34) return 0;
+  if (product.targetJob && !product.targetJob.includes(user.job)) return 0;
   let score = 0;
-  const { period, investmentPropensity, job, interestRate } = product;
 
-  if (period === user.period) score += 50;
-  else if (Math.abs(period - user.period) <= 12) score += 20;
+  if (product.period === user.period) score += 50;
+  else if (Math.abs(product.period - user.period) <= 12) score += 20;
 
   if (user.investmentPropensity === "안정") {
     score += product.type === "deposit" ? 30 : 10;
@@ -77,7 +78,11 @@ app.post("/recommend", (req, res) => {
     .map(p => ({ productId: p.id, score: calculateScore(p, user) }))
     .sort((a, b) => b.score - a.score);
 
-  const topIds = scores.slice(0, 3).map(s => s.productId);
+  const topIds = scores
+    .filter(s => s.score > 0)
+    .slice(0, 3)
+    .map(s => s.productId);
+
   const recommendedProducts = products
     .filter(p => topIds.includes(p.id))
     .sort((a, b) => {
@@ -107,7 +112,9 @@ app.post("/recommend", (req, res) => {
     const savingsRate = user.monthlyIncome > 0
       ? Math.round((user.monthlySavings / user.monthlyIncome) * 100)
       : 0;
-    actionRecommendation = `소득의 ${savingsRate}%를 저축하고 계시네요! "${top.productName}"을 통해 목표 수익률을 높여보세요.`;
+    actionRecommendation = savingsRate === 0
+      ? `"${top.bankName} ${top.productName}"으로 지금 당장 저축을 시작해보세요. 작은 금액도 괜찮습니다.`
+      : `소득의 ${savingsRate}%를 저축하고 계시네요! "${top.productName}"을 통해 목표 수익률을 높여보세요.`;
   }
 
   res.json({
