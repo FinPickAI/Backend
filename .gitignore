@@ -1,2 +1,10 @@
+# dependencies
 node_modules/
-package-lock.json
+
+# env / secrets
+.env
+.env.*
+!.env.example
+
+# logs
+*.log

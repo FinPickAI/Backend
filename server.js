@@ -1,19 +1,13 @@
+require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
+const pool = require("./db");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-const products = [
-  { id: "p1", bankName: "국민은행", productName: "KB청년도약계좌", interestRate: 6.0, type: "savings", period: 36, targetJob: ["사회초년생", "학생", "구직자"], description: "청년의 중장기 자산형성을 지원하는 정부 연계형 적금 상품입니다.", notice: "중도 해지 시 정부 기여금이 지급되지 않을 수 있습니다.", tags: ["청년전용", "고금리", "정부지원"] },
-  { id: "p2", bankName: "신한은행", productName: "신한 안심 정기예금", interestRate: 3.5, type: "deposit", period: 12, description: "안정적인 자산 관리를 원하는 분들을 위한 대표 예금 상품입니다.", notice: "만기 전 해지 시 약정 이율보다 낮은 중도해지 이율이 적용됩니다.", tags: ["안정형", "대표상품"] },
-  { id: "p3", bankName: "카카오뱅크", productName: "26주 적금", interestRate: 4.0, type: "savings", period: 6, description: "매주 조금씩 늘려가는 재미가 있는 단기 집중 저축 상품입니다.", notice: "자동이체 실패 시 우대금리가 적용되지 않습니다.", tags: ["재미", "단기목표"] },
-  { id: "p4", bankName: "하나은행", productName: "내맘적금", interestRate: 3.8, type: "savings", period: 12, description: "자유로운 입금으로 목돈을 마련할 수 있는 유연한 적금입니다.", notice: "최종 이율은 우대 조건 충족 여부에 따라 달라집니다.", tags: ["유연함", "목돈마련"] },
-  { id: "p5", bankName: "토스뱅크", productName: "먼저 이자 받는 예금", interestRate: 3.2, type: "deposit", period: 6, description: "가입 즉시 이자를 먼저 받아 바로 활용할 수 있는 예금입니다.", notice: "중도 해지 시 이미 받은 이자는 원금에서 차감됩니다.", tags: ["선이자", "자산운용"] },
-  { id: "p6", bankName: "우리은행", productName: "우리 첫거래 우대 적금", interestRate: 5.5, type: "savings", period: 12, targetJob: ["사회초년생", "직장인"], description: "우리은행과 처음 시작하는 고객을 위한 고금리 혜택 적금입니다.", notice: "직전 1년간 우리은행 계좌 보유 이력이 없어야 합니다.", tags: ["첫거래", "사회초년생추천"] },
-  { id: "p7", bankName: "기업은행", productName: "IBK 중기근로자 우대적금", interestRate: 4.5, type: "savings", period: 24, targetJob: ["직장인"], description: "중소기업 근로자의 자산 형성을 위해 특별 우대 금리를 제공합니다.", notice: "재직 증명서 등 서류 확인이 필요할 수 있습니다.", tags: ["직장인 전용", "우대금리"] },
-];
+const INTERNET_BANKS = ["케이뱅크", "카카오뱅크", "토스뱅크"];
 
 const benefits = [
   { id: "b1", name: "청년월세 특별지원", description: "경제적 어려움을 겪는 청년층의 주거비 부담 경감을 위해 월세를 지원합니다.", minAge: 19, maxAge: 34, maxIncome: 30000000, category: "주거", relevanceReason: "주거비 절감을 통한 저축 여력 확보에 도움이 됩니다." },
@@ -22,110 +16,147 @@ const benefits = [
   { id: "b4", name: "내일채움공제", description: "중소기업 핵심인력의 장기재직 유도를 위해 목돈 마련을 지원합니다.", targetJob: ["직장인"], category: "금융", relevanceReason: "재직 중인 기업과 정부가 함께 저축액을 매칭해 드립니다." },
 ];
 
-const calculateScore = (product, user) => {
-  if (product.id === "p1" && user.age > 34) return 0;
-  if (product.targetJob && !product.targetJob.includes(user.job)) return 0;
+const JOB_KEYWORDS = {
+  "사회초년생": ["사회초년생", "청년"],
+  "학생": ["학생", "청년"],
+  "구직자": ["구직자", "청년"],
+  "직장인": ["직장인", "근로자"],
+};
 
+// 상품별 옵션 중, 유저 희망기간과 가장 가까운 옵션 하나 선택
+function pickBestOption(options, userPeriod) {
+  return options.reduce((best, o) => {
+    const dist = Math.abs(Number(o.save_trm) - userPeriod);
+    const bestDist = best ? Math.abs(Number(best.save_trm) - userPeriod) : Infinity;
+    return dist < bestDist ? o : best;
+  }, null);
+}
+
+function calculateScore(product, option, user) {
   let score = 0;
+  const optPeriod = Number(option.save_trm);
 
-  if (product.period === user.period) score += 50;
-  else if (Math.abs(product.period - user.period) <= 12) score += 20;
+  // 1. 기간 매칭 (유저 희망기간과의 거리 기반)
+  const dist = Math.abs(optPeriod - user.period);
+  if (dist === 0) score += 40;
+  else if (dist <= 6) score += 25;
+  else if (dist <= 12) score += 15;
+  else score += 5;
 
+  // 2. 12개월 스위트스팟 보너스 (분석 결과: 12개월 구간 평균금리 최고)
+  if (optPeriod === 12) score += 10;
+
+  // 3. 투자성향 매칭 (분석 결과: 적금 평균금리가 예금보다 높음 → 공격형 가중치 상향)
   if (user.investmentPropensity === "안정") {
-    score += product.type === "deposit" ? 30 : 10;
+    score += product.product_type === "deposit" ? 25 : 5;
   } else if (user.investmentPropensity === "공격") {
-    score += product.type === "savings" ? 30 : 5;
+    score += product.product_type === "savings" ? 35 : 5;
   } else {
-    score += 20;
+    score += 15;
   }
 
-  if (product.targetJob?.includes(user.job)) score += 40;
-  score += product.interestRate * 2;
+  // 4. 인터넷은행 보너스 (분석 결과: 평균금리 상위 3개 은행이 전부 인터넷은행)
+  if (INTERNET_BANKS.some((b) => product.kor_co_nm.includes(b))) score += 15;
 
-  return score;
-};
+  // 5. 복리 보너스 (분석 결과: 복리가 단리보다 평균 0.6%p 높음, 희소 옵션)
+  if (option.intr_rate_type_nm === "복리") score += 8;
 
-const generateReason = (product, user) => {
+  // 6. 타겟 키워드 매칭 (우대조건 텍스트에서 직업군 키워드 탐색)
+  const keywords = JOB_KEYWORDS[user.job] || [];
+  const text = `${product.spcl_cnd || ""} ${product.etc_note || ""}`;
+  if (keywords.some((k) => text.includes(k))) score += 20;
+
+  // 7. 금리 자체 반영
+  score += Number(option.intr_rate2) * 3;
+
+  return Math.round(score * 10) / 10;
+}
+
+function generateReason(product, option, user) {
   const reasons = [];
+  const optPeriod = Number(option.save_trm);
 
-  if (product.period === user.period) {
-    reasons.push("희망 운용 기간과 상품 만기가 일치함");
-  } else if (Math.abs(product.period - user.period) <= 12) {
-    reasons.push("희망 운용 기간과 유사한 만기 조건");
+  if (optPeriod === user.period) reasons.push("희망 운용 기간과 상품 만기가 일치함");
+  else reasons.push(`희망 운용 기간(${user.period}개월)과 유사한 만기(${optPeriod}개월)`);
+
+  if (INTERNET_BANKS.some((b) => product.kor_co_nm.includes(b))) reasons.push("인터넷은행 고금리 상품");
+  if (option.intr_rate_type_nm === "복리") reasons.push("복리 적용 상품");
+  if (Number(option.intr_rate2) >= 4) reasons.push(`높은 금리 (${option.intr_rate2}%)`);
+
+  return reasons.join(" · ") || "종합 조건 기반 추천";
+}
+
+app.post("/recommend", async (req, res) => {
+  try {
+    const user = req.body;
+    const annualIncome = user.monthlyIncome * 12 * 10000;
+
+    const { rows } = await pool.query(
+      `SELECT p.fin_prdt_cd, p.kor_co_nm, p.fin_prdt_nm, p.product_type, p.spcl_cnd, p.etc_note,
+              o.save_trm, o.intr_rate2, o.intr_rate_type_nm
+       FROM products p
+       JOIN product_options o ON p.fin_prdt_cd = o.fin_prdt_cd`
+    );
+
+    // fin_prdt_cd 기준으로 그룹핑
+    const grouped = {};
+    for (const row of rows) {
+      if (!grouped[row.fin_prdt_cd]) grouped[row.fin_prdt_cd] = { product: row, options: [] };
+      grouped[row.fin_prdt_cd].options.push(row);
+    }
+
+    const scored = Object.values(grouped).map(({ product, options }) => {
+      const bestOption = pickBestOption(options, user.period);
+      const score = calculateScore(product, bestOption, user);
+      return {
+        id: product.fin_prdt_cd,
+        bankName: product.kor_co_nm,
+        productName: product.fin_prdt_nm,
+        type: product.product_type,
+        period: Number(bestOption.save_trm),
+        interestRate: Number(bestOption.intr_rate2),
+        interestType: bestOption.intr_rate_type_nm,
+        score,
+        recommendReason: generateReason(product, bestOption, user),
+      };
+    });
+
+    const recommendedProducts = scored.sort((a, b) => b.score - a.score).slice(0, 3);
+
+    const filteredBenefits = benefits.filter((b) => {
+      if (b.minAge && user.age < b.minAge) return false;
+      if (b.maxAge && user.age > b.maxAge) return false;
+      if (b.maxIncome && annualIncome > b.maxIncome) return false;
+      if (b.targetJob && !b.targetJob.includes(user.job)) return false;
+      return true;
+    });
+
+    const top = recommendedProducts[0];
+    const topBenefit = filteredBenefits[0];
+
+    let actionRecommendation;
+    if (topBenefit?.name.includes("청년")) {
+      actionRecommendation = `"${topBenefit.name}" 신청 자격을 먼저 확인하고, "${top.bankName} ${top.productName}"으로 목돈 마련을 시작하세요.`;
+    } else if (user.investmentPropensity === "안정") {
+      actionRecommendation = `안정적인 자산 운용을 위해 "${top.bankName} ${top.productName}" 가입을 최우선으로 검토해보세요.`;
+    } else {
+      const savingsRate = user.monthlyIncome > 0 ? Math.round((user.monthlySavings / user.monthlyIncome) * 100) : 0;
+      actionRecommendation = savingsRate === 0
+        ? `"${top.bankName} ${top.productName}"으로 지금 당장 저축을 시작해보세요. 작은 금액도 괜찮습니다.`
+        : `소득의 ${savingsRate}%를 저축하고 계시네요! "${top.productName}"을 통해 목표 수익률을 높여보세요.`;
+    }
+
+    res.json({
+      products: recommendedProducts,
+      benefits: filteredBenefits.slice(0, 3),
+      actionRecommendation,
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
   }
-
-  if (user.investmentPropensity === "안정" && product.type === "deposit") {
-    reasons.push("안정형 투자 성향에 적합한 예금 상품");
-  } else if (user.investmentPropensity === "공격" && product.type === "savings") {
-    reasons.push("공격형 투자 성향에 적합한 적금 상품");
-  }
-
-  if (product.targetJob?.includes(user.job)) {
-    reasons.push(`${user.job} 대상 우대 조건 있음`);
-  }
-
-  if (product.interestRate >= 4) {
-    reasons.push(`높은 금리 (${product.interestRate}%)`);
-  }
-
-  return reasons.length > 0 ? reasons.join(" · ") : "종합 조건 기반 추천";
-};
-
-app.post("/recommend", (req, res) => {
-  const user = req.body;
-  const annualIncome = user.monthlyIncome * 12 * 10000;
-
-  const scores = products
-    .map(p => ({ productId: p.id, score: calculateScore(p, user) }))
-    .sort((a, b) => b.score - a.score);
-
-  const topIds = scores
-    .filter(s => s.score > 0)
-    .slice(0, 3)
-    .map(s => s.productId);
-
-  const recommendedProducts = products
-    .filter(p => topIds.includes(p.id))
-    .sort((a, b) => {
-      const sa = scores.find(s => s.productId === a.id)?.score ?? 0;
-      const sb = scores.find(s => s.productId === b.id)?.score ?? 0;
-      return sb - sa;
-    })
-    .map(p => ({ ...p, recommendReason: generateReason(p, user) }));
-
-  const filteredBenefits = benefits.filter(b => {
-    if (b.minAge && user.age < b.minAge) return false;
-    if (b.maxAge && user.age > b.maxAge) return false;
-    if (b.maxIncome && annualIncome > b.maxIncome) return false;
-    if (b.targetJob && !b.targetJob.includes(user.job)) return false;
-    return true;
-  });
-
-  const top = recommendedProducts[0];
-  const topBenefit = filteredBenefits[0];
-
-  let actionRecommendation;
-  if (topBenefit?.name.includes("청년")) {
-    actionRecommendation = `"${topBenefit.name}" 신청 자격을 먼저 확인하고, "${top.bankName} ${top.productName}"으로 목돈 마련을 시작하세요.`;
-  } else if (user.investmentPropensity === "안정") {
-    actionRecommendation = `안정적인 자산 운용을 위해 "${top.bankName} ${top.productName}" 가입을 최우선으로 검토해보세요.`;
-  } else {
-    const savingsRate = user.monthlyIncome > 0
-      ? Math.round((user.monthlySavings / user.monthlyIncome) * 100)
-      : 0;
-    actionRecommendation = savingsRate === 0
-      ? `"${top.bankName} ${top.productName}"으로 지금 당장 저축을 시작해보세요. 작은 금액도 괜찮습니다.`
-      : `소득의 ${savingsRate}%를 저축하고 계시네요! "${top.productName}"을 통해 목표 수익률을 높여보세요.`;
-  }
-
-  res.json({
-    products: recommendedProducts,
-    benefits: filteredBenefits.slice(0, 3),
-    actionRecommendation,
-    scores,
-  });
 });
 
 app.get("/health", (req, res) => res.json({ status: "ok" }));
 
-app.listen(3001, () => console.log("✅ Server running on http://localhost:3001"));
+app.listen(process.env.PORT || 3001, () => console.log(`✅ Server running on port ${process.env.PORT || 3001}`));
